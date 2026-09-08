@@ -6,7 +6,7 @@ down_revision='0003'
 
 def upgrade():
     op.execute("ALTER TABLE user_preferences ADD COLUMN language VARCHAR(5) NOT NULL DEFAULT 'en'")
-    schema=Path(__file__).resolve().parents[3]/'database'/'schema_v3.sql'
+    schema=Path(__file__).resolve().parents[1]/'sql'/'schema_v3.sql'
     op.get_bind().exec_driver_sql(schema.read_text(encoding='utf-8'))
     for table in ('auth_sessions','account_states'):
         op.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY')

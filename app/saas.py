@@ -234,7 +234,7 @@ def install_routes(app, auth, db_dependency, write):
         fields = {'merchant_id': settings.payhere_merchant_id, 'order_id': order.id, 'amount': amount, 'currency': 'LKR',
                   'hash': md5(settings.payhere_merchant_id + order.id + amount + 'LKR' + secret_hash),
                   'return_url': settings.public_url + '/?billing=return', 'cancel_url': settings.public_url + '/?billing=cancel',
-                  'notify_url': settings.public_url + '/api/billing/payhere/notify', 'items': 'InvoiceStock Business - one month',
+                  'notify_url': (settings.backend_public_url or settings.public_url) + '/api/billing/payhere/notify', 'items': 'InvoiceStock Business - one month',
                   'first_name': user.name.split()[0], 'last_name': ' '.join(user.name.split()[1:]) or user.name,
                   'email': user.email, 'phone': data.phone, 'address': data.address, 'city': data.city, 'country': 'Sri Lanka'}
         return {'action': 'https://sandbox.payhere.lk/pay/checkout' if settings.payhere_sandbox else 'https://www.payhere.lk/pay/checkout', 'fields': fields}

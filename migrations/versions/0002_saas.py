@@ -6,7 +6,7 @@ down_revision = '0001'
 
 
 def upgrade():
-    schema = Path(__file__).resolve().parents[3] / 'database' / 'schema_v2.sql'
+    schema = Path(__file__).resolve().parents[1] / 'sql' / 'schema_v2.sql'
     op.get_bind().exec_driver_sql(schema.read_text(encoding='utf-8'))
 
 

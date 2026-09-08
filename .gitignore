@@ -1,5 +1,13 @@
 .venv/
 .env
+.env.local
+.env.production
+*.db
+*.db-*
+*.log
 __pycache__/
-*.pyc
+**/__pycache__/
 .pytest_cache/
+backups/
+*.dump
+*.gpg

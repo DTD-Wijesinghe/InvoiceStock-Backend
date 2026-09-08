@@ -3,7 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 from sqlalchemy import create_engine, String, Numeric, ForeignKey, UniqueConstraint, JSON, DateTime, Boolean, Integer, CheckConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -17,16 +17,25 @@ class Settings(BaseSettings):
     ai_api_key: str = ''
     ai_model: str = ''
     public_url: str = 'http://localhost:5173'
+    backend_public_url: str = ''
     payhere_merchant_id: str = ''
     payhere_merchant_secret: str = ''
     payhere_sandbox: bool = True
     backup_last_success: str = ''
     backup_webhook_secret: str = ''
+    @field_validator('frontend_origin', 'public_url', 'backend_public_url')
+    @classmethod
+    def normalize_origin(cls, value):
+        return value.strip().rstrip('/')
+
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
 
 
 settings = Settings()
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+from .deployment import database_url
+connection_url = database_url(settings.database_url)
+connection_options = {} if connection_url.get_backend_name() == 'sqlite' else {'pool_size': 3, 'max_overflow': 2, 'pool_timeout': 30, 'pool_recycle': 300, 'connect_args': {'connect_timeout': 15}}
+engine = create_engine(connection_url, pool_pre_ping=True, **connection_options)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 

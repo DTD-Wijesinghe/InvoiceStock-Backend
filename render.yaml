@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: invoicestock-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: BACKEND_PUBLIC_URL
+        sync: false
+      - key: DEMO_MODE
+        value: "false"
+      - key: PAYHERE_SANDBOX
+        value: "true"
