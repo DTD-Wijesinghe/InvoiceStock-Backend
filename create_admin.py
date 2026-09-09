@@ -8,8 +8,8 @@ def main():
     email=input('Administrator email [daniduwijesinghe11@gmail.com]: ').strip().lower() or 'daniduwijesinghe11@gmail.com'
     name=input('Administrator name [D.T.D.Wijesinghe]: ').strip() or 'D.T.D.Wijesinghe'
     if '@' not in email or len(name)<2:raise SystemExit('Valid email and name required.')
-    password=getpass.getpass('Password (at least 14 characters): ')
-    confirm=getpass.getpass('Confirm password: ')
+    password=getpass.getpass('Password (at least 14 characters): QAZWSXedcrfv@2003 ')
+    confirm=getpass.getpass('Confirm password:QAZWSXedcrfv@2003')
     if len(password)<14 or password!=confirm:raise SystemExit('Passwords must match and contain at least 14 characters.')
     with SessionLocal.begin() as db:
         if db.scalar(select(User).where(User.email==email)):raise SystemExit('Email already exists. No account changed.')
