@@ -5,8 +5,8 @@ from app.db import SessionLocal,User,Business
 from app.main import hasher
 
 def main():
-    email=input('Administrator email: ').strip().lower()
-    name=input('Administrator name: ').strip()
+    email=input('Administrator email [daniduwijesinghe11@gmail.com]: ').strip().lower() or 'daniduwijesinghe11@gmail.com'
+    name=input('Administrator name [D.T.D.Wijesinghe]: ').strip() or 'D.T.D.Wijesinghe'
     if '@' not in email or len(name)<2:raise SystemExit('Valid email and name required.')
     password=getpass.getpass('Password (at least 14 characters): ')
     confirm=getpass.getpass('Confirm password: ')
@@ -19,3 +19,4 @@ def main():
     print('Platform administrator created. Use the normal sign-in form.')
 
 if __name__=='__main__':main()
+
