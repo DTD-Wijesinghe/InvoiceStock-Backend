@@ -13,7 +13,7 @@ from pwdlib import PasswordHash
 from fastapi import FastAPI, Depends, HTTPException, Request, Response, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
@@ -120,7 +120,7 @@ def sign_in(response, user, db, remember=False):
 
 def send_reset_email(recipient, code):
     if not (settings.smtp_host and settings.smtp_from):
-        return
+        raise RuntimeError('Email delivery is not configured')
     message = EmailMessage()
     message['Subject'] = 'InvoiceStock password reset code'
     message['From'] = settings.smtp_from
@@ -143,10 +143,13 @@ def health(db: DB):
 @app.post('/api/auth/register')
 def register(data: Register, response: Response, request: Request, db: DB):
     throttle(request)
+    email = data.email.lower().strip()
+    if db.scalar(select(User).where(func.lower(User.email) == email)):
+        raise HTTPException(409, 'This email is already registered. Sign in or use Forgot password.')
     business = Business(name=data.business_name)
     db.add(business)
     db.flush()
-    user = User(business_id=business.id, email=data.email.lower(), name=data.name, password_hash=hasher.hash(data.password), role='owner')
+    user = User(business_id=business.id, email=email, name=data.name, password_hash=hasher.hash(data.password), role='owner')
     db.add(user)
     db.flush()
     subscription(db, user)
@@ -171,12 +174,16 @@ def forgot_password(data: ForgotPassword, request: Request, db: DB, background: 
     throttle(request)
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
     if user:
+        if not (settings.smtp_host and settings.smtp_from):
+            raise HTTPException(503, 'Password-reset email is not configured. Please contact the administrator.')
         db.query(PasswordReset).filter(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None)).update({'used_at': now()})
         code = f'{secrets.randbelow(1000000):06d}'
+        try:
+            send_reset_email(user.email, code)
+        except (OSError, smtplib.SMTPException, RuntimeError):
+            raise HTTPException(503, 'Password-reset email could not be sent. Please try again later.')
         db.add(PasswordReset(business_id=user.business_id, user_id=user.id, token_hash=hashlib.sha256(code.encode()).hexdigest(), expires_at=now() + timedelta(minutes=15)))
         db.flush()
-        if settings.smtp_host and settings.smtp_from:
-            background.add_task(send_reset_email, user.email, code)
     return {'message': 'If that email belongs to an account, a reset code has been sent.'}
 
 
