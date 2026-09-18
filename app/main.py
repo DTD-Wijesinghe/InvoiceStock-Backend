@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import secrets
 import smtplib
+import httpx
 from decimal import Decimal
 from email.message import EmailMessage
 import jwt
@@ -143,42 +144,48 @@ def sign_in(response, user, db, remember=False):
     return serialize(user)
 
 
-def send_reset_email(recipient, code):
-    if not (settings.smtp_host and settings.smtp_from):
+def email_delivery_configured():
+    return bool(settings.smtp_from and (settings.brevo_api_key or settings.smtp_host))
+
+
+def send_email(recipient, subject, content):
+    if not email_delivery_configured():
         raise RuntimeError('Email delivery is not configured')
+    sender = settings.smtp_from.strip()
+    if settings.brevo_api_key.strip():
+        response = httpx.post(
+            'https://api.brevo.com/v3/smtp/email',
+            headers={'api-key': settings.brevo_api_key.strip(), 'content-type': 'application/json'},
+            json={
+                'sender': {'email': sender, 'name': settings.brevo_sender_name.strip() or 'InvoiceStock'},
+                'to': [{'email': recipient}],
+                'subject': subject,
+                'textContent': content,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        return
     message = EmailMessage()
-    message['Subject'] = 'InvoiceStock password reset code'
-    smtp_from = settings.smtp_from.strip()
-    smtp_username = settings.smtp_username.strip()
-    smtp_password = settings.smtp_password.replace(' ', '').strip()
-    message['From'] = smtp_from
+    message['Subject'] = subject
+    message['From'] = sender
     message['To'] = recipient
-    message.set_content(f'Your InvoiceStock password reset code is {code}. It expires in 15 minutes. If you did not request this, ignore this email.')
+    message.set_content(content)
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
         if settings.smtp_use_tls:
             server.starttls()
+        smtp_username = settings.smtp_username.strip()
         if smtp_username:
-            server.login(smtp_username, smtp_password)
+            server.login(smtp_username, settings.smtp_password.replace(' ', '').strip())
         server.send_message(message)
+
+
+def send_reset_email(recipient, code):
+    send_email(recipient, 'InvoiceStock password reset code', f'Your InvoiceStock password reset code is {code}. It expires in 15 minutes. If you did not request this, ignore this email.')
 
 
 def send_verification_email(recipient, code):
-    if not (settings.smtp_host and settings.smtp_from):
-        raise RuntimeError('Email delivery is not configured')
-    message = EmailMessage()
-    message['Subject'] = 'Verify your InvoiceStock email'
-    smtp_from = settings.smtp_from.strip()
-    smtp_username = settings.smtp_username.strip()
-    smtp_password = settings.smtp_password.replace(' ', '').strip()
-    message['From'] = smtp_from
-    message['To'] = recipient
-    message.set_content(f'Your InvoiceStock email verification code is {code}. It expires in 15 minutes. If you did not create this account, ignore this email.')
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
-        if settings.smtp_use_tls:
-            server.starttls()
-        if smtp_username:
-            server.login(smtp_username, smtp_password)
-        server.send_message(message)
+    send_email(recipient, 'Verify your InvoiceStock email', f'Your InvoiceStock email verification code is {code}. It expires in 15 minutes. If you did not create this account, ignore this email.')
 
 
 def issue_email_code(db, user, purpose='email_verification'):
@@ -198,7 +205,7 @@ def health(db: DB):
 def register(data: Register, response: Response, request: Request, db: DB, background: BackgroundTasks):
     throttle(request)
     email = data.email.lower().strip()
-    if not (settings.smtp_host and settings.smtp_from):
+    if not email_delivery_configured():
         raise HTTPException(503, 'Email verification is not configured. The administrator must configure SMTP before registration.')
     if db.scalar(select(User).where(func.lower(User.email) == email)):
         raise HTTPException(409, 'This email is already registered. Sign in or use Forgot password.')
@@ -222,7 +229,7 @@ def login(data: Login, response: Response, request: Request, db: DB, background:
     if not user or not hasher.verify(data.password, user.password_hash):
         raise HTTPException(401, 'Invalid email or password')
     if not user.email_verified:
-        if settings.smtp_host and settings.smtp_from:
+        if email_delivery_configured():
             code = issue_email_code(db, user)
             background.add_task(send_verification_email, user.email, code)
         raise HTTPException(403, 'Verify your email before signing in. Check your inbox for the six-digit code.')
@@ -236,7 +243,7 @@ def login(data: Login, response: Response, request: Request, db: DB, background:
 def forgot_password(data: ForgotPassword, request: Request, db: DB, background: BackgroundTasks):
     throttle(request)
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
-    if user and settings.smtp_host and settings.smtp_from:
+    if user and email_delivery_configured():
         code = f'{secrets.randbelow(1000000):06d}'
         reset = PasswordReset(business_id=user.business_id, user_id=user.id, token_hash=hashlib.sha256(code.encode()).hexdigest(), expires_at=now() + timedelta(minutes=15), purpose='password_reset')
         db.add(reset)
@@ -265,7 +272,7 @@ def verify_email(data: EmailCodeInput, response: Response, request: Request, db:
 def resend_verification(data: EmailOnlyInput, request: Request, db: DB, background: BackgroundTasks):
     throttle(request)
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
-    if user and not user.email_verified and settings.smtp_host and settings.smtp_from:
+    if user and not user.email_verified and email_delivery_configured():
         code = issue_email_code(db, user)
         background.add_task(send_verification_email, user.email, code)
     return {'message': 'If the account needs verification, a new code has been sent.'}
@@ -535,7 +542,7 @@ def company_performance(user: Actor, db: DB):
 @app.post('/api/members')
 def new_member(data: MemberInput, user: Actor, db: DB, background: BackgroundTasks):
     write(user, True)
-    if not (settings.smtp_host and settings.smtp_from):
+    if not email_delivery_configured():
         raise HTTPException(503, 'Email verification is not configured. Configure SMTP before creating employees.')
     email = data.email.lower().strip()
     if db.scalar(select(User).where(func.lower(User.email) == email)):

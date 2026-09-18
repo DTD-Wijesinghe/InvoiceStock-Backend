@@ -17,5 +17,9 @@ services:
         sync: false
       - key: DEMO_MODE
         value: "false"
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_SENDER_NAME
+        value: "InvoiceStock"
       - key: PAYHERE_SANDBOX
         value: "true"

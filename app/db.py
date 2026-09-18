@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     smtp_password: str = ''
     smtp_from: str = ''
     smtp_use_tls: bool = True
+    brevo_api_key: str = ''
+    brevo_sender_name: str = 'InvoiceStock'
     @field_validator('frontend_origin', 'public_url', 'backend_public_url')
     @classmethod
     def normalize_origin(cls, value):
