@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator, field_valida
 
 
 Money = Decimal
+RECOVERY_QUESTION_CODES = {'id_number', 'br_number', 'secret_code'}
 
 
 class Input(BaseModel):
@@ -35,6 +36,16 @@ class Register(Input):
     def matching_passwords(self):
         if self.password != self.confirm_password:
             raise ValueError('Passwords do not match')
+        return self
+
+    @model_validator(mode='after')
+    def valid_recovery_answers(self):
+        questions = [self.recovery_question_1, self.recovery_question_2, self.recovery_question_3]
+        answers = [self.recovery_answer_1.strip(), self.recovery_answer_2.strip(), self.recovery_answer_3.strip()]
+        if set(questions) != RECOVERY_QUESTION_CODES:
+            raise ValueError('Choose three different recovery questions')
+        if any(len(a) < 2 for a in answers):
+            raise ValueError('Answer all three recovery questions')
         return self
 
 
@@ -69,17 +80,6 @@ class ResetPassword(Input):
         if self.password != self.confirm_password:
             raise ValueError('Passwords do not match')
         return self
-
-    @model_validator(mode='after')
-    def valid_recovery_answers(self):
-        questions = [self.recovery_question_1, self.recovery_question_2, self.recovery_question_3]
-        answers = [self.recovery_answer_1.strip(), self.recovery_answer_2.strip(), self.recovery_answer_3.strip()]
-        if any(not q for q in questions) or len(set(questions)) != 3:
-            raise ValueError('Choose three different recovery questions')
-        if any(len(a) < 2 for a in answers):
-            raise ValueError('Answer all three recovery questions')
-        return self
-
 
 class ProductInput(Input):
     sku: str = Field(min_length=1, max_length=60)
