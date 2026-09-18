@@ -148,14 +148,17 @@ def send_reset_email(recipient, code):
         raise RuntimeError('Email delivery is not configured')
     message = EmailMessage()
     message['Subject'] = 'InvoiceStock password reset code'
-    message['From'] = settings.smtp_from
+    smtp_from = settings.smtp_from.strip()
+    smtp_username = settings.smtp_username.strip()
+    smtp_password = settings.smtp_password.replace(' ', '').strip()
+    message['From'] = smtp_from
     message['To'] = recipient
     message.set_content(f'Your InvoiceStock password reset code is {code}. It expires in 15 minutes. If you did not request this, ignore this email.')
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
         if settings.smtp_use_tls:
             server.starttls()
-        if settings.smtp_username:
-            server.login(settings.smtp_username, settings.smtp_password)
+        if smtp_username:
+            server.login(smtp_username, smtp_password)
         server.send_message(message)
 
 
@@ -164,14 +167,17 @@ def send_verification_email(recipient, code):
         raise RuntimeError('Email delivery is not configured')
     message = EmailMessage()
     message['Subject'] = 'Verify your InvoiceStock email'
-    message['From'] = settings.smtp_from
+    smtp_from = settings.smtp_from.strip()
+    smtp_username = settings.smtp_username.strip()
+    smtp_password = settings.smtp_password.replace(' ', '').strip()
+    message['From'] = smtp_from
     message['To'] = recipient
     message.set_content(f'Your InvoiceStock email verification code is {code}. It expires in 15 minutes. If you did not create this account, ignore this email.')
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
         if settings.smtp_use_tls:
             server.starttls()
-        if settings.smtp_username:
-            server.login(settings.smtp_username, settings.smtp_password)
+        if smtp_username:
+            server.login(smtp_username, smtp_password)
         server.send_message(message)
 
 
