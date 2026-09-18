@@ -77,8 +77,12 @@ def sync_notifications(db, user):
     elif state['days_remaining'] <= 7:
         notify(db, user, 'renew-' + str(date.today()), 'Your access renews soon', f'{state["days_remaining"]} days remain. Visit Billing to keep your workspace available.', 'Billing', 'warning')
     if not state['blocked']:
-        for p in db.scalars(select(Product).where(Product.business_id == user.business_id, Product.active == True, Product.stock <= Product.reorder_level).limit(30)):
-            notify(db, user, f'stock-{p.id}-{date.today()}', f'Low stock: {p.name}', f'{p.stock} {p.unit} available; reorder level {p.reorder_level}. Review before placing a purchase.', 'Inventory', 'warning')
+        products = db.scalars(select(Product).where(Product.business_id == user.business_id, Product.active == True).limit(100)).all()
+        for p in products:
+            if p.stock <= p.reorder_level:
+                notify(db, user, f'stock-low-{p.id}-{date.today()}', f'Low stock: {p.name}', f'{p.stock} {p.unit} available; reorder level {p.reorder_level}. Review before placing a purchase.', 'Inventory', 'warning')
+            elif p.max_stock_level is not None and p.stock > p.max_stock_level:
+                notify(db, user, f'stock-high-{p.id}-{date.today()}', f'Stock above target: {p.name}', f'{p.stock} {p.unit} on hand; maximum target is {p.max_stock_level}. Review purchasing before adding more.', 'Inventory', 'info')
     db.flush()
 
 

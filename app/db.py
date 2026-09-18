@@ -101,6 +101,7 @@ class Product(Tenant, Base):
     sell_price: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
     stock: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0)
     reorder_level: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=5)
+    max_stock_level: Mapped[Decimal | None] = mapped_column(Numeric(14, 3), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 

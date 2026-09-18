@@ -48,8 +48,17 @@ def once(db, user, key, payload):
 
 
 def document_view(db, doc):
-    result = serialize(doc)
+    result = document_summary(doc)
     result['items'] = [serialize(i) for i in db.scalars(select(DocumentItem).where(DocumentItem.document_id == doc.id))]
+    return result
+
+
+def document_summary(doc):
+    result = serialize(doc)
+    if doc.kind == 'invoice' and doc.status == 'final':
+        result['payment_status'] = 'paid' if doc.paid >= doc.total else 'partially_paid' if doc.paid > 0 else 'pending'
+    else:
+        result['payment_status'] = 'not_due'
     return result
 
 

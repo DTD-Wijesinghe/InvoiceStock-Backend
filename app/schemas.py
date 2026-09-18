@@ -71,7 +71,14 @@ class ProductInput(Input):
     cost_price: Money = Field(default=0, ge=0, max_digits=14, decimal_places=2)
     sell_price: Money = Field(default=0, ge=0, max_digits=14, decimal_places=2)
     reorder_level: Decimal = Field(default=5, ge=0, max_digits=14, decimal_places=3)
+    max_stock_level: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=3)
     active: bool = True
+
+    @model_validator(mode='after')
+    def valid_stock_range(self):
+        if self.max_stock_level is not None and self.max_stock_level < self.reorder_level:
+            raise ValueError('Maximum stock level must be greater than or equal to the reorder level')
+        return self
 
 
 class ContactInput(Input):

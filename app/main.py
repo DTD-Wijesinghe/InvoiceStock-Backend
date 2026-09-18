@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from pydantic import ValidationError
 from .db import session, settings, User, Business, Product, Contact, Document, Expense, Movement, Audit, AgentRun, CustomerPayment, AuthSession, AccountState, PasswordReset, now
 from .schemas import Register, Login, ForgotPassword, ResetPassword, ProductInput, ContactInput, DocumentInput, Approval, Adjustment, Payment, ExpenseInput, BusinessInput, MemberInput, AgentInput
-from .services import serialize, get, audit, once, document_view, create_document, finalize, void_document, report, tenant_lock
+from .services import serialize, get, audit, once, document_view, document_summary, create_document, finalize, void_document, report, tenant_lock
 from .agents import run_agent
 from .saas import access_status, allowed_when_locked, subscription, notify, install_routes, utc
 from .admin import install_admin_routes
@@ -293,7 +293,7 @@ def edit_contact(cid: str, data: ContactInput, user: Actor, db: DB):
 
 @app.get('/api/documents')
 def documents(user: Actor, db: DB):
-    return [serialize(d) for d in db.scalars(select(Document).where(Document.business_id == user.business_id).order_by(Document.created_at.desc()).limit(500))]
+    return [document_summary(d) for d in db.scalars(select(Document).where(Document.business_id == user.business_id).order_by(Document.created_at.desc()).limit(500))]
 
 
 @app.post('/api/documents')
