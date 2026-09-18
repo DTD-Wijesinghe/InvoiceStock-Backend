@@ -149,7 +149,11 @@ def register(data: Register, response: Response, request: Request, db: DB):
     business = Business(name=data.business_name)
     db.add(business)
     db.flush()
-    user = User(business_id=business.id, email=email, name=data.name, password_hash=hasher.hash(data.password), role='owner')
+    user = User(business_id=business.id, email=email, name=data.name, password_hash=hasher.hash(data.password), role='owner',
+                recovery_question_1=data.recovery_question_1, recovery_question_2=data.recovery_question_2,
+                recovery_question_3=data.recovery_question_3, recovery_answer_1_hash=hasher.hash(data.recovery_answer_1.strip().casefold()),
+                recovery_answer_2_hash=hasher.hash(data.recovery_answer_2.strip().casefold()),
+                recovery_answer_3_hash=hasher.hash(data.recovery_answer_3.strip().casefold()))
     db.add(user)
     db.flush()
     subscription(db, user)
@@ -174,6 +178,9 @@ def forgot_password(data: ForgotPassword, request: Request, db: DB, background: 
     throttle(request)
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
     if user:
+        if user.recovery_question_1 and user.recovery_question_2 and user.recovery_question_3:
+            return {'recovery': 'questions', 'questions': [user.recovery_question_1, user.recovery_question_2, user.recovery_question_3],
+                    'message': 'Answer all three recovery questions to create a new password.'}
         if not (settings.smtp_host and settings.smtp_from):
             raise HTTPException(503, 'Password-reset email is not configured. Please contact the administrator.')
         db.query(PasswordReset).filter(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None)).update({'used_at': now()})
@@ -193,6 +200,15 @@ def reset_password(data: ResetPassword, request: Request, db: DB):
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
     if not user:
         raise HTTPException(400, 'Invalid or expired reset code')
+    recovery_answers = [data.recovery_answer_1, data.recovery_answer_2, data.recovery_answer_3]
+    if all(answer is not None for answer in recovery_answers):
+        stored = [user.recovery_answer_1_hash, user.recovery_answer_2_hash, user.recovery_answer_3_hash]
+        if not all(stored) or not all(hasher.verify(answer.strip().casefold(), expected) for answer, expected in zip(recovery_answers, stored)):
+            raise HTTPException(400, 'The recovery answers do not match')
+        user.password_hash = hasher.hash(data.password)
+        for active in db.scalars(select(AuthSession).where(AuthSession.user_id == user.id)):
+            db.delete(active)
+        return {'message': 'Password changed. Please sign in again.'}
     reset = db.scalar(select(PasswordReset).where(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None)).order_by(PasswordReset.created_at.desc()))
     if not reset or utc(reset.expires_at) <= now() or reset.attempts >= 5:
         raise HTTPException(400, 'Invalid or expired reset code')

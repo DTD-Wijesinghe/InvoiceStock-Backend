@@ -87,6 +87,12 @@ class User(Tenant, Base):
     name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(300))
     role: Mapped[str] = mapped_column(String(20), default='owner')
+    recovery_question_1: Mapped[str] = mapped_column(String(40), default='')
+    recovery_question_2: Mapped[str] = mapped_column(String(40), default='')
+    recovery_question_3: Mapped[str] = mapped_column(String(40), default='')
+    recovery_answer_1_hash: Mapped[str] = mapped_column(String(300), default='')
+    recovery_answer_2_hash: Mapped[str] = mapped_column(String(300), default='')
+    recovery_answer_3_hash: Mapped[str] = mapped_column(String(300), default='')
 
 
 class Product(Tenant, Base):

@@ -17,6 +17,12 @@ class Register(Input):
     email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
     password: str = Field(min_length=10, max_length=128)
     confirm_password: str = Field(min_length=10, max_length=128)
+    recovery_question_1: str = Field(default='', max_length=40)
+    recovery_question_2: str = Field(default='', max_length=40)
+    recovery_question_3: str = Field(default='', max_length=40)
+    recovery_answer_1: str = Field(default='', min_length=2, max_length=200)
+    recovery_answer_2: str = Field(default='', min_length=2, max_length=200)
+    recovery_answer_3: str = Field(default='', min_length=2, max_length=200)
 
     @field_validator('password')
     @classmethod
@@ -44,7 +50,10 @@ class ForgotPassword(Input):
 
 class ResetPassword(Input):
     email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
-    code: str = Field(min_length=6, max_length=6, pattern=r'^\d{6}$')
+    code: str | None = Field(default=None, min_length=6, max_length=6, pattern=r'^\d{6}$')
+    recovery_answer_1: str | None = Field(default=None, min_length=2, max_length=200)
+    recovery_answer_2: str | None = Field(default=None, min_length=2, max_length=200)
+    recovery_answer_3: str | None = Field(default=None, min_length=2, max_length=200)
     password: str = Field(min_length=10, max_length=128)
     confirm_password: str = Field(min_length=10, max_length=128)
 
@@ -59,6 +68,16 @@ class ResetPassword(Input):
     def matching_passwords(self):
         if self.password != self.confirm_password:
             raise ValueError('Passwords do not match')
+        return self
+
+    @model_validator(mode='after')
+    def valid_recovery_answers(self):
+        questions = [self.recovery_question_1, self.recovery_question_2, self.recovery_question_3]
+        answers = [self.recovery_answer_1.strip(), self.recovery_answer_2.strip(), self.recovery_answer_3.strip()]
+        if any(not q for q in questions) or len(set(questions)) != 3:
+            raise ValueError('Choose three different recovery questions')
+        if any(len(a) < 2 for a in answers):
+            raise ValueError('Answer all three recovery questions')
         return self
 
 
