@@ -1,5 +1,4 @@
 """Subscriptions, verified hosted checkout, customer payment reporting and workspace support."""
-import calendar
 import hashlib
 import hmac
 import json
@@ -9,12 +8,12 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated, Literal
 from urllib.parse import parse_qs
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Request, Response, UploadFile, File
 from pydantic import Field
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from .db import (Business, User, Product, Contact, Document, DocumentItem, Movement, Expense, Audit, AgentRun,
-                 Subscription, BillingOrder, CustomerPayment, Notification, Preference, Feedback, BackupRecord, settings, now)
+                 Subscription, BillingOrder, BankTransfer, CustomerPayment, Notification, Preference, Feedback, BackupRecord, settings, now)
 from .schemas import Input
 from .services import serialize, tenant_lock, get, audit
 
@@ -27,9 +26,8 @@ def utc(value):
 
 
 def next_month(value):
-    year = value.year + (value.month == 12)
-    month = value.month % 12 + 1
-    return value.replace(year=year, month=month, day=min(value.day, calendar.monthrange(year, month)[1]))
+    """Return one paid access period (exactly 30 days)."""
+    return value + timedelta(days=30)
 
 
 def subscription(db, user):
@@ -54,7 +52,10 @@ def access_status(db, user):
             'trial_ends_at': trial_end.isoformat(), 'paid_until': paid_end.isoformat() if paid_end else None,
             'days_remaining': max(0, math.ceil((active_until - now()).total_seconds() / 86400)),
             'gateway_configured': bool(settings.payhere_merchant_id and settings.payhere_merchant_secret),
-            'sandbox': settings.payhere_sandbox}
+            'sandbox': settings.payhere_sandbox,
+            'bank_transfer': {'bank_name': settings.bank_name, 'branch': settings.bank_branch,
+                              'account_name': settings.bank_account_name, 'account_number': settings.bank_account_number,
+                              'amount': str(settings.bank_transfer_amount), 'currency': 'LKR'}}
 
 
 def allowed_when_locked(path):
@@ -210,7 +211,37 @@ def install_routes(app, auth, db_dependency, write):
 
     @app.get('/api/billing')
     def billing(user: Actor, db: DB):
-        return {'subscription': access_status(db, user), 'orders': [serialize(o) for o in db.scalars(select(BillingOrder).where(BillingOrder.business_id == user.business_id).order_by(BillingOrder.created_at.desc()).limit(50))]}
+        transfers = [serialize(o) for o in db.scalars(select(BankTransfer).where(BankTransfer.business_id == user.business_id).order_by(BankTransfer.created_at.desc()).limit(20))]
+        for transfer in transfers:
+            transfer.pop('file_data', None)
+        return {'subscription': access_status(db, user),
+                'orders': [serialize(o) for o in db.scalars(select(BillingOrder).where(BillingOrder.business_id == user.business_id).order_by(BillingOrder.created_at.desc()).limit(50))],
+                'bank_transfers': transfers}
+
+    @app.post('/api/billing/bank-transfer')
+    async def bank_transfer(request: Request, user: Actor, db: DB, slip: UploadFile = File(...)):
+        write(user, True)
+        if slip.content_type not in ('image/jpeg', 'image/png', 'image/webp', 'application/pdf'):
+            raise HTTPException(415, 'Upload a JPG, PNG, WEBP, or PDF bank slip')
+        if not slip.filename or len(slip.filename) > 180:
+            raise HTTPException(400, 'Invalid slip filename')
+        payload = await slip.read(5 * 1024 * 1024 + 1)
+        if len(payload) > 5 * 1024 * 1024:
+            raise HTTPException(413, 'Slip must be 5 MB or smaller')
+        digest = hashlib.sha256(payload).hexdigest()
+        existing = db.scalar(select(BankTransfer).where(BankTransfer.business_id == user.business_id, BankTransfer.file_hash == digest))
+        if existing:
+            raise HTTPException(409, 'This slip has already been submitted')
+        form = await request.form()
+        transfer = BankTransfer(business_id=user.business_id, user_id=user.id, amount=settings.bank_transfer_amount,
+                                currency='LKR', transfer_reference=str(form.get('transfer_reference', ''))[:120],
+                                submitted_transfer_date=str(form.get('transfer_date', ''))[:10], file_name=slip.filename,
+                                content_type=slip.content_type, file_hash=digest, file_data=payload)
+        db.add(transfer)
+        db.flush()
+        notify(db, user, 'bank-transfer-' + transfer.id, 'Payment slip received',
+               'Your bank transfer slip is pending verification. Access will be activated for 30 days after approval.', 'Billing', 'info')
+        return {'id': transfer.id, 'status': transfer.status, 'message': 'Slip received and pending verification.'}
 
     @app.post('/api/billing/checkout')
     def checkout(data: CheckoutInput, user: Actor, db: DB):
@@ -234,7 +265,7 @@ def install_routes(app, auth, db_dependency, write):
         fields = {'merchant_id': settings.payhere_merchant_id, 'order_id': order.id, 'amount': amount, 'currency': 'LKR',
                   'hash': md5(settings.payhere_merchant_id + order.id + amount + 'LKR' + secret_hash),
                   'return_url': settings.public_url + '/?billing=return', 'cancel_url': settings.public_url + '/?billing=cancel',
-                  'notify_url': (settings.backend_public_url or settings.public_url) + '/api/billing/payhere/notify', 'items': 'InvoiceStock Business - one month',
+                  'notify_url': (settings.backend_public_url or settings.public_url) + '/api/billing/payhere/notify', 'items': 'InvoiceStock Business - 30 days',
                   'first_name': user.name.split()[0], 'last_name': ' '.join(user.name.split()[1:]) or user.name,
                   'email': user.email, 'phone': data.phone, 'address': data.address, 'city': data.city, 'country': 'Sri Lanka'}
         return {'action': 'https://sandbox.payhere.lk/pay/checkout' if settings.payhere_sandbox else 'https://www.payhere.lk/pay/checkout', 'fields': fields}

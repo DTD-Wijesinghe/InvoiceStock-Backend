@@ -19,7 +19,7 @@ def test_migration_sql_is_inside_repository():
     from unittest.mock import patch, MagicMock
     versions=Path(__file__).resolve().parents[1]/'migrations/versions'
     ddl=[]
-    for name in ('0001_initial.py','0002_saas.py','0004_admin_security.py'):
+    for name in ('0001_initial.py','0002_saas.py','0004_admin_security.py','0005_bank_transfers.py'):
         # Resolve by revision prefix to allow descriptive filenames.
         path=next(versions.glob(name[:4]+'*.py'))
         spec=spec_from_file_location('migration_'+name[:4],path)

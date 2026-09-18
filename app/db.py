@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
-from sqlalchemy import create_engine, String, Numeric, ForeignKey, UniqueConstraint, JSON, DateTime, Boolean, Integer, CheckConstraint
+from sqlalchemy import create_engine, String, Numeric, ForeignKey, UniqueConstraint, JSON, DateTime, Boolean, Integer, CheckConstraint, LargeBinary
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     payhere_merchant_id: str = ''
     payhere_merchant_secret: str = ''
     payhere_sandbox: bool = True
+    bank_name: str = 'Commercial Bank'
+    bank_branch: str = 'Kadawatha'
+    bank_account_name: str = 'D.T.D. Wijesinghe'
+    bank_account_number: str = '8011696267'
+    bank_transfer_amount: Decimal = Decimal('3500.00')
     backup_last_success: str = ''
     backup_webhook_secret: str = ''
     @field_validator('frontend_origin', 'public_url', 'backend_public_url')
@@ -191,6 +196,24 @@ class BillingOrder(Tenant, Base):
     payment_id: Mapped[str | None] = mapped_column(String(100), unique=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     access_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BankTransfer(Tenant, Base):
+    __tablename__ = 'bank_transfers'
+    __table_args__ = (UniqueConstraint('business_id', 'file_hash'),)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=3500)
+    currency: Mapped[str] = mapped_column(String(3), default='LKR')
+    transfer_reference: Mapped[str] = mapped_column(String(120), default='')
+    submitted_transfer_date: Mapped[str] = mapped_column(String(10), default='')
+    file_name: Mapped[str] = mapped_column(String(180))
+    content_type: Mapped[str] = mapped_column(String(80))
+    file_hash: Mapped[str] = mapped_column(String(64))
+    file_data: Mapped[bytes] = mapped_column(LargeBinary)
+    status: Mapped[str] = mapped_column(String(20), default='pending')
+    review_note: Mapped[str] = mapped_column(String(500), default='')
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CustomerPayment(Tenant, Base):

@@ -166,4 +166,4 @@ def test_backup_reporting_requires_secret(client):
 
 def test_month_end_renewal():
     from datetime import datetime, timezone
-    assert next_month(datetime(2026,1,31,tzinfo=timezone.utc)).day==28
+    assert next_month(datetime(2026,1,31,tzinfo=timezone.utc)) == datetime(2026,3,2,tzinfo=timezone.utc)

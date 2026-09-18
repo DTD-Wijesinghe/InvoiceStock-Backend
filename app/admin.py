@@ -1,13 +1,13 @@
 """Platform administration is isolated from business-owner permissions."""
 from datetime import timedelta
 from typing import Annotated, Literal
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Response
 from pydantic import Field
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
-from .db import User, Business, Subscription, BillingOrder, Feedback, BackupRecord, AccountState, AuthSession, Audit, now
+from .db import User, Business, Subscription, BillingOrder, BankTransfer, Feedback, BackupRecord, AccountState, AuthSession, Audit, now
 from .schemas import Input
-from .saas import access_status, subscription, utc
+from .saas import access_status, subscription, utc, notify
 from .services import serialize, audit, tenant_lock
 
 APP_INFO={'name':'InvoiceStock AI','version':'0.2.0','release_date':'2026-09-08','developer':'D.T.D.Wijesinghe','contact':'danidu.wijesinghe@outlook.com',
@@ -27,6 +27,11 @@ class SubscriptionAction(Input):
 
 class FeedbackAction(Input):
     status: Literal['received','reviewing','resolved']
+
+
+class BankTransferAction(Input):
+    action: Literal['approve', 'reject']
+    note: str = Field(min_length=5, max_length=500)
 
 
 def install_admin_routes(app, auth, db_dependency):
@@ -124,3 +129,50 @@ def install_admin_routes(app, auth, db_dependency):
     def backup_history(user:Actor,db:DB):
         require_admin(user)
         return [serialize(b) for b in db.scalars(select(BackupRecord).order_by(BackupRecord.created_at.desc()).limit(200))]
+
+    @app.get('/api/admin/bank-transfers')
+    def bank_transfers(user:Actor, db:DB):
+        require_admin(user)
+        rows=[]
+        for transfer in db.scalars(select(BankTransfer).order_by(BankTransfer.created_at.desc()).limit(200)):
+            owner=db.get(User, transfer.user_id)
+            row=serialize(transfer)
+            row.pop('file_data', None)
+            row['owner_name']=owner.name if owner else 'Unknown'
+            row['owner_email']=owner.email if owner else ''
+            rows.append(row)
+        return rows
+
+    @app.get('/api/admin/bank-transfers/{tid}/file')
+    def bank_transfer_file(tid:str, user:Actor, db:DB):
+        require_admin(user)
+        transfer=db.get(BankTransfer, tid)
+        if not transfer: raise HTTPException(404, 'Payment slip not found')
+        return Response(content=transfer.file_data, media_type=transfer.content_type,
+                        headers={'Content-Disposition': f'inline; filename="{transfer.file_name}"'})
+
+    @app.post('/api/admin/bank-transfers/{tid}/review')
+    def review_bank_transfer(tid:str, data:BankTransferAction, user:Actor, db:DB):
+        require_admin(user)
+        transfer=db.get(BankTransfer, tid)
+        if not transfer: raise HTTPException(404, 'Payment slip not found')
+        if transfer.status != 'pending': raise HTTPException(409, 'This payment slip was already reviewed')
+        owner=db.get(User, transfer.user_id)
+        if not owner: raise HTTPException(404, 'Payment owner not found')
+        transfer.reviewed_by=user.id
+        transfer.reviewed_at=now()
+        transfer.review_note=data.note
+        if data.action == 'reject':
+            transfer.status='rejected'
+            return serialize(transfer)
+        tenant_lock(db, owner)
+        sub=subscription(db, owner)
+        start=max(now(), utc(sub.trial_ends_at), utc(sub.paid_until) or now())
+        sub.paid_until=start+timedelta(days=30)
+        sub.suspended=False
+        transfer.status='approved'
+        db.add(Audit(business_id=owner.business_id, actor=user.id, action='bank_transfer_approved', entity_id=transfer.id,
+                     after={'amount':str(transfer.amount), 'access_until':sub.paid_until.isoformat(), 'note':data.note}))
+        notify(db, owner, 'bank-transfer-approved-'+transfer.id, 'Payment approved',
+               'Your bank transfer was approved. Your business workspace is active for 30 days.', 'Billing', 'success')
+        return {'transfer':serialize(transfer), 'subscription':access_status(db, owner)}
