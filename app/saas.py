@@ -83,6 +83,14 @@ def sync_notifications(db, user):
                 notify(db, user, f'stock-low-{p.id}-{date.today()}', f'Low stock: {p.name}', f'{p.stock} {p.unit} available; reorder level {p.reorder_level}. Review before placing a purchase.', 'Inventory', 'warning')
             elif p.max_stock_level is not None and p.stock > p.max_stock_level:
                 notify(db, user, f'stock-high-{p.id}-{date.today()}', f'Stock above target: {p.name}', f'{p.stock} {p.unit} on hand; maximum target is {p.max_stock_level}. Review purchasing before adding more.', 'Inventory', 'info')
+        if user.role in ('owner', 'company_admin'):
+            pending = list(db.scalars(select(Document).where(Document.business_id == user.business_id, Document.kind == 'invoice', Document.status == 'final', Document.paid < Document.total).limit(100)))
+            outstanding = sum((d.total - d.paid for d in pending), Decimal(0))
+            if pending:
+                notify(db, user, f'receivables-{date.today()}', 'Customer payments are pending', f'{len(pending)} invoice(s) have LKR {outstanding} outstanding. Review receivables and follow up with customers.', 'Reports', 'warning')
+            month_expenses = db.scalar(select(func.coalesce(func.sum(Expense.amount), 0)).where(Expense.business_id == user.business_id, Expense.voided == False, Expense.date >= date.today().replace(day=1).isoformat())) or 0
+            if month_expenses:
+                notify(db, user, f'payables-{date.today()}', 'Company expenses to review', f'Recorded expenses this month total LKR {month_expenses}. Check payables and approvals.', 'Expenses', 'info')
     db.flush()
 
 
@@ -158,7 +166,7 @@ def verify_payment(db, form):
     order = db.scalar(select(BillingOrder).where(BillingOrder.id == form['order_id']))
     if not order:
         raise HTTPException(404, 'Unknown billing order')
-    owner = db.scalar(select(User).where(User.business_id == order.business_id, User.role == 'owner'))
+    owner = db.scalar(select(User).where(User.business_id == order.business_id, User.role.in_(['owner', 'company_admin'])))
     tenant_lock(db, owner)
     db.refresh(order, with_for_update=True)
     try:
@@ -203,7 +211,7 @@ def install_routes(app, auth, db_dependency, write):
         secret = settings.backup_webhook_secret
         if len(secret) < 32 or not hmac.compare_digest(request.headers.get('x-backup-key', ''), secret):
             raise HTTPException(403, 'Invalid backup reporting credential')
-        for owner in db.scalars(select(User).where(User.role == 'owner')):
+        for owner in db.scalars(select(User).where(User.role.in_(['owner', 'company_admin']))):
             tenant_lock(db, owner)
             day_start = now().replace(hour=0, minute=0, second=0, microsecond=0)
             prior = db.scalar(select(BackupRecord).where(BackupRecord.business_id == owner.business_id, BackupRecord.kind == 'scheduled', BackupRecord.created_at >= day_start, BackupRecord.status == data.status))

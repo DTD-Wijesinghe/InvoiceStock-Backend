@@ -7,18 +7,19 @@ import hashlib
 import hmac
 import secrets
 import smtplib
+from decimal import Decimal
 from email.message import EmailMessage
 import jwt
 from pwdlib import PasswordHash
-from fastapi import FastAPI, Depends, HTTPException, Request, Response, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, Request, Response, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response as RawResponse
 from sqlalchemy import select, text, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 from .db import session, settings, User, Business, Product, Contact, Document, Expense, Movement, Audit, AgentRun, CustomerPayment, AuthSession, AccountState, PasswordReset, now
-from .schemas import Register, Login, ForgotPassword, ResetPassword, ProductInput, ContactInput, DocumentInput, Approval, Adjustment, Payment, ExpenseInput, BusinessInput, MemberInput, AgentInput
+from .schemas import Register, Login, ForgotPassword, ResetPassword, EmailCodeInput, EmailOnlyInput, ProductInput, ContactInput, DocumentInput, Approval, Adjustment, Payment, ExpenseInput, BusinessInput, MemberInput, AgentInput
 from .services import serialize, get, audit, once, document_view, document_summary, create_document, finalize, void_document, report, tenant_lock
 from .agents import run_agent
 from .saas import access_status, allowed_when_locked, subscription, notify, install_routes, utc
@@ -82,6 +83,9 @@ def current_user(request: Request, db: DB):
         if request.url.path == '/api/me' or request.url.path.startswith(('/api/admin', '/api/about', '/api/security')):
             return user
         raise HTTPException(403, 'Use the platform administration workspace')
+    feature = request_feature(request.url.path)
+    if feature and not can_access(user, feature):
+        raise HTTPException(403, 'This feature is not enabled for your account. Ask your company administrator.')
     if not allowed_when_locked(request.url.path) and access_status(db, user)['blocked']:
         raise HTTPException(402, 'Your trial or subscription has expired. Renew in Billing to unlock your business workspace.')
     return user
@@ -89,9 +93,30 @@ def current_user(request: Request, db: DB):
 
 Actor = Annotated[User, Depends(current_user)]
 
+FEATURE_PATHS = {
+    '/api/products': 'products', '/api/contacts': 'customers', '/api/documents': 'invoices',
+    '/api/expenses': 'expenses', '/api/movements': 'inventory', '/api/reports': 'reports',
+    '/api/agents': 'ai_assistant', '/api/notifications': 'notifications', '/api/backup': 'backups',
+    '/api/feedback': 'feedback', '/api/settings': 'settings',
+}
+
+def request_feature(path):
+    for prefix, feature in FEATURE_PATHS.items():
+        if path == prefix or path.startswith(prefix + '/'):
+            return feature
+    return None
+
+def is_company_admin(user):
+    return user.role in ('owner', 'company_admin')
+
+def can_access(user, feature):
+    if feature == 'overview':
+        return is_company_admin(user)
+    return is_company_admin(user) or feature in (user.permissions or [])
+
 
 def write(user, owner=False):
-    if user.role == 'viewer' or (owner and user.role != 'owner'):
+    if user.role == 'viewer' or (owner and not is_company_admin(user)):
         raise HTTPException(403, 'Owner approval required' if owner else 'Read-only account')
 
 
@@ -134,6 +159,29 @@ def send_reset_email(recipient, code):
         server.send_message(message)
 
 
+def send_verification_email(recipient, code):
+    if not (settings.smtp_host and settings.smtp_from):
+        raise RuntimeError('Email delivery is not configured')
+    message = EmailMessage()
+    message['Subject'] = 'Verify your InvoiceStock email'
+    message['From'] = settings.smtp_from
+    message['To'] = recipient
+    message.set_content(f'Your InvoiceStock email verification code is {code}. It expires in 15 minutes. If you did not create this account, ignore this email.')
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
+        if settings.smtp_use_tls:
+            server.starttls()
+        if settings.smtp_username:
+            server.login(settings.smtp_username, settings.smtp_password)
+        server.send_message(message)
+
+
+def issue_email_code(db, user, purpose='email_verification'):
+    code = f'{secrets.randbelow(1000000):06d}'
+    db.add(PasswordReset(business_id=user.business_id, user_id=user.id, token_hash=hashlib.sha256(code.encode()).hexdigest(), expires_at=now() + timedelta(minutes=15), purpose=purpose))
+    db.flush()
+    return code
+
+
 @app.get('/health')
 def health(db: DB):
     db.execute(text('SELECT 1'))
@@ -141,32 +189,37 @@ def health(db: DB):
 
 
 @app.post('/api/auth/register')
-def register(data: Register, response: Response, request: Request, db: DB):
+def register(data: Register, response: Response, request: Request, db: DB, background: BackgroundTasks):
     throttle(request)
     email = data.email.lower().strip()
+    if not (settings.smtp_host and settings.smtp_from):
+        raise HTTPException(503, 'Email verification is not configured. The administrator must configure SMTP before registration.')
     if db.scalar(select(User).where(func.lower(User.email) == email)):
         raise HTTPException(409, 'This email is already registered. Sign in or use Forgot password.')
     business = Business(name=data.business_name)
     db.add(business)
     db.flush()
-    user = User(business_id=business.id, email=email, name=data.name, password_hash=hasher.hash(data.password), role='owner',
-                recovery_question_1=data.recovery_question_1, recovery_question_2=data.recovery_question_2,
-                recovery_question_3=data.recovery_question_3, recovery_answer_1_hash=hasher.hash(data.recovery_answer_1.strip().casefold()),
-                recovery_answer_2_hash=hasher.hash(data.recovery_answer_2.strip().casefold()),
-                recovery_answer_3_hash=hasher.hash(data.recovery_answer_3.strip().casefold()))
+    user = User(business_id=business.id, email=email, name=data.name, password_hash=hasher.hash(data.password), role='company_admin', permissions=[], email_verified=False)
     db.add(user)
     db.flush()
+    code = issue_email_code(db, user)
+    background.add_task(send_verification_email, email, code)
     subscription(db, user)
     notify(db, user, 'welcome', 'Your 30-day free trial starts now', 'Welcome! Take the optional tour and set up your first product. After your trial, the Business plan is LKR 3,500 per month.', 'Overview', 'success')
-    return sign_in(response, user, db)
+    return {'verification_required': True, 'email': email, 'message': 'Verification code sent. Enter it to activate your company administrator account.'}
 
 
 @app.post('/api/auth/login')
-def login(data: Login, response: Response, request: Request, db: DB):
+def login(data: Login, response: Response, request: Request, db: DB, background: BackgroundTasks):
     throttle(request)
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
     if not user or not hasher.verify(data.password, user.password_hash):
         raise HTTPException(401, 'Invalid email or password')
+    if not user.email_verified:
+        if settings.smtp_host and settings.smtp_from:
+            code = issue_email_code(db, user)
+            background.add_task(send_verification_email, user.email, code)
+        raise HTTPException(403, 'Verify your email before signing in. Check your inbox for the six-digit code.')
     account = db.scalar(select(AccountState).where(AccountState.user_id == user.id))
     if account and account.disabled:
         raise HTTPException(403, 'This account is disabled. Contact the administrator.')
@@ -177,12 +230,39 @@ def login(data: Login, response: Response, request: Request, db: DB):
 def forgot_password(data: ForgotPassword, request: Request, db: DB, background: BackgroundTasks):
     throttle(request)
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
-    if user:
-        if not (user.recovery_question_1 and user.recovery_question_2 and user.recovery_question_3):
-            raise HTTPException(400, 'Recovery questions are not set for this account. Contact the administrator.')
-        return {'recovery': 'questions', 'questions': [user.recovery_question_1, user.recovery_question_2, user.recovery_question_3],
-                'message': 'Answer all three recovery questions to create a new password.'}
-    return {'message': 'If that email belongs to an account, recovery questions will be shown.'}
+    if user and settings.smtp_host and settings.smtp_from:
+        code = f'{secrets.randbelow(1000000):06d}'
+        reset = PasswordReset(business_id=user.business_id, user_id=user.id, token_hash=hashlib.sha256(code.encode()).hexdigest(), expires_at=now() + timedelta(minutes=15), purpose='password_reset')
+        db.add(reset)
+        db.flush()
+        background.add_task(send_reset_email, user.email, code)
+    return {'message': 'If that email belongs to an account, a password reset code has been sent.'}
+
+
+@app.post('/api/auth/verify-email')
+def verify_email(data: EmailCodeInput, response: Response, request: Request, db: DB):
+    throttle(request)
+    user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
+    if not user:
+        raise HTTPException(400, 'Invalid or expired verification code')
+    reset = db.scalar(select(PasswordReset).where(PasswordReset.user_id == user.id, PasswordReset.purpose == 'email_verification', PasswordReset.used_at.is_(None)).order_by(PasswordReset.created_at.desc()))
+    if not reset or utc(reset.expires_at) <= now() or reset.attempts >= 5 or not hmac.compare_digest(reset.token_hash, hashlib.sha256(data.code.encode()).hexdigest()):
+        if reset: reset.attempts += 1
+        raise HTTPException(400, 'Invalid or expired verification code')
+    reset.used_at = now()
+    user.email_verified = True
+    user.verified_at = now()
+    return sign_in(response, user, db)
+
+
+@app.post('/api/auth/resend-verification')
+def resend_verification(data: EmailOnlyInput, request: Request, db: DB, background: BackgroundTasks):
+    throttle(request)
+    user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
+    if user and not user.email_verified and settings.smtp_host and settings.smtp_from:
+        code = issue_email_code(db, user)
+        background.add_task(send_verification_email, user.email, code)
+    return {'message': 'If the account needs verification, a new code has been sent.'}
 
 
 @app.post('/api/auth/reset-password')
@@ -191,16 +271,7 @@ def reset_password(data: ResetPassword, request: Request, db: DB):
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
     if not user:
         raise HTTPException(400, 'Invalid or expired reset code')
-    recovery_answers = [data.recovery_answer_1, data.recovery_answer_2, data.recovery_answer_3]
-    if all(answer is not None for answer in recovery_answers):
-        stored = [user.recovery_answer_1_hash, user.recovery_answer_2_hash, user.recovery_answer_3_hash]
-        if not all(stored) or not all(hasher.verify(answer.strip().casefold(), expected) for answer, expected in zip(recovery_answers, stored)):
-            raise HTTPException(400, 'The recovery answers do not match')
-        user.password_hash = hasher.hash(data.password)
-        for active in db.scalars(select(AuthSession).where(AuthSession.user_id == user.id)):
-            db.delete(active)
-        return {'message': 'Password changed. Please sign in again.'}
-    reset = db.scalar(select(PasswordReset).where(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None)).order_by(PasswordReset.created_at.desc()))
+    reset = db.scalar(select(PasswordReset).where(PasswordReset.user_id == user.id, PasswordReset.purpose == 'password_reset', PasswordReset.used_at.is_(None)).order_by(PasswordReset.created_at.desc()))
     if not reset or utc(reset.expires_at) <= now() or reset.attempts >= 5:
         raise HTTPException(400, 'Invalid or expired reset code')
     reset.attempts += 1
@@ -228,6 +299,31 @@ def logout(response: Response, request: Request, db: DB):
 @app.get('/api/me')
 def me(user: Actor, db: DB):
     return {'user': serialize(user), 'business': serialize(db.get(Business, user.business_id)), 'ai_model_configured': bool(settings.ai_model), 'demo_mode': settings.demo_mode, 'subscription': None if user.role == 'platform_admin' else access_status(db, user)}
+
+
+@app.get('/api/business/logo')
+def business_logo(user: Actor, db: DB):
+    business = db.get(Business, user.business_id)
+    if not business or not business.logo_data:
+        raise HTTPException(404, 'Company logo has not been uploaded')
+    return RawResponse(content=business.logo_data, media_type=business.logo_content_type or 'image/png', headers={'Cache-Control': 'no-cache'})
+
+
+@app.post('/api/business/logo')
+def upload_business_logo(user: Actor, db: DB, file: UploadFile = File(...)):
+    if not is_company_admin(user):
+        raise HTTPException(403, 'Only a company administrator can change the logo')
+    allowed = {'image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'}
+    if file.content_type not in allowed:
+        raise HTTPException(415, 'Upload a PNG, JPG, WEBP, or SVG logo')
+    content = file.file.read(1024 * 1024 + 1)
+    if len(content) > 1024 * 1024:
+        raise HTTPException(413, 'Logo must be smaller than 1 MB')
+    business = tenant_lock(db, user)
+    business.logo_data = content
+    business.logo_content_type = file.content_type
+    audit(db, user, 'company_logo_updated', business.id, after={'content_type': file.content_type, 'size': len(content)})
+    return {'ok': True}
 
 
 @app.get('/api/products')
@@ -351,6 +447,8 @@ def payment(did: str, data: Payment, user: Actor, db: DB):
     doc.paid += data.amount
     db.add(CustomerPayment(business_id=user.business_id, document_id=doc.id, amount=data.amount, method=data.method, reference=data.reference, actor=user.id))
     notify(db, user, 'payment-' + data.request_key, 'Customer payment recorded', f'LKR {data.amount} received by {data.method.replace("_", " ")} for {doc.number}.', 'Invoices', 'success')
+    for administrator in db.scalars(select(User).where(User.business_id == user.business_id, User.role.in_(['owner', 'company_admin']), User.id != user.id)):
+        notify(db, administrator, 'payment-' + data.request_key, 'Customer payment received', f'LKR {data.amount} was recorded for {doc.number}. Review company receivables.', 'Reports', 'success')
     audit(db, user, 'payment_recorded', doc.id, before, serialize(doc))
     return serialize(doc)
 
@@ -402,14 +500,47 @@ def members(user: Actor, db: DB):
     return [serialize(u) for u in db.scalars(select(User).where(User.business_id == user.business_id))]
 
 
+@app.get('/api/company/performance')
+def company_performance(user: Actor, db: DB):
+    if not is_company_admin(user):
+        raise HTTPException(403, 'Only a company administrator can view employee performance')
+    invoices = list(db.scalars(select(Document).where(Document.business_id == user.business_id, Document.kind == 'invoice', Document.status == 'final')))
+    expenses = list(db.scalars(select(Expense).where(Expense.business_id == user.business_id, Expense.voided == False)))
+    audits = list(db.scalars(select(Audit).where(Audit.business_id == user.business_id).order_by(Audit.created_at.desc()).limit(5000)))
+    employees = []
+    for member in db.scalars(select(User).where(User.business_id == user.business_id).order_by(User.name)):
+        rows = [a for a in audits if a.actor == member.id]
+        sales = [a for a in rows if a.action == 'draft_created' and (a.after or {}).get('kind') == 'invoice']
+        approved = [a for a in rows if a.action == 'document_approved' and (a.after or {}).get('kind') == 'invoice']
+        payments = [a for a in rows if a.action == 'payment_recorded']
+        payment_total = sum((Decimal(str((a.after or {}).get('paid', 0))) - Decimal(str((a.before or {}).get('paid', 0))) for a in payments), Decimal(0))
+        employees.append({'id': member.id, 'name': member.name, 'email': member.email, 'email_verified': member.email_verified, 'role': member.role,
+                          'sales_created': len(sales), 'invoices_approved': len(approved),
+                          'payments_recorded': len(payments), 'payments_received': str(payment_total),
+                          'activity_count': len(rows)})
+    pending = [d for d in invoices if d.paid < d.total]
+    return {'employees': employees, 'invoice_count': len(invoices),
+            'pending_receivables': str(sum((d.total - d.paid for d in pending), Decimal(0))),
+            'pending_invoice_count': len(pending),
+            'payments_received': str(sum((d.paid for d in invoices), Decimal(0))),
+            'expenses_total': str(sum((e.amount for e in expenses), Decimal(0)))}
+
+
 @app.post('/api/members')
-def new_member(data: MemberInput, user: Actor, db: DB):
+def new_member(data: MemberInput, user: Actor, db: DB, background: BackgroundTasks):
     write(user, True)
-    member = User(business_id=user.business_id, name=data.name, email=data.email.lower(), role=data.role, password_hash=hasher.hash(data.password))
+    if not (settings.smtp_host and settings.smtp_from):
+        raise HTTPException(503, 'Email verification is not configured. Configure SMTP before creating employees.')
+    email = data.email.lower().strip()
+    if db.scalar(select(User).where(func.lower(User.email) == email)):
+        raise HTTPException(409, 'This email is already registered')
+    member = User(business_id=user.business_id, name=data.name, email=email, role=data.role, permissions=data.permissions, password_hash=hasher.hash(data.password))
     db.add(member)
     db.flush()
+    code = issue_email_code(db, member)
+    background.add_task(send_verification_email, member.email, code)
     audit(db, user, 'member_created', member.id, after=serialize(member))
-    return serialize(member)
+    return {**serialize(member), 'message': 'Employee created. A verification code was sent to the employee email.'}
 
 
 @app.get('/api/audit')
@@ -428,7 +559,7 @@ def agent(data: AgentInput, user: Actor, db: DB):
     write(user)
     result = run_agent(db, user, data)
     if result['status'] == 'pending_approval':
-        for owner in db.scalars(select(User).where(User.business_id == user.business_id, User.role == 'owner')):
+        for owner in db.scalars(select(User).where(User.business_id == user.business_id, User.role.in_(['owner', 'company_admin']))):
             notify(db, owner, 'agent-' + result['id'], 'An AI draft needs your review', 'The invoice agent prepared a draft. Review its customer, quantities and totals before approval.', 'Invoices')
     return result
 

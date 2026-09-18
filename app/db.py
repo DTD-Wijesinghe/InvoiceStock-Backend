@@ -79,6 +79,8 @@ class Business(Identity, Base):
     invoice_prefix: Mapped[str] = mapped_column(String(12), default='INV')
     address: Mapped[str] = mapped_column(String(300), default='')
     next_invoice: Mapped[int] = mapped_column(Integer, default=1)
+    logo_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    logo_content_type: Mapped[str] = mapped_column(String(80), default='')
 
 
 class User(Tenant, Base):
@@ -87,6 +89,9 @@ class User(Tenant, Base):
     name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(300))
     role: Mapped[str] = mapped_column(String(20), default='owner')
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     recovery_question_1: Mapped[str] = mapped_column(String(40), default='')
     recovery_question_2: Mapped[str] = mapped_column(String(40), default='')
     recovery_question_3: Mapped[str] = mapped_column(String(40), default='')
@@ -287,6 +292,7 @@ class PasswordReset(Tenant, Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    purpose: Mapped[str] = mapped_column(String(30), default='password_reset')
 
 
 class AccountState(Tenant, Base):

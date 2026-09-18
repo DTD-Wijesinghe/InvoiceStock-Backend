@@ -29,12 +29,13 @@ def bootstrap_admin():
             db.add(business)
             db.flush()
             admin = User(business_id=business.id, email=email, name=name,
-                         password_hash=hasher.hash(password), role='platform_admin')
+                         password_hash=hasher.hash(password), role='platform_admin', email_verified=True)
             db.add(admin)
         else:
             admin.email = email
             admin.name = name
             admin.password_hash = hasher.hash(password)
+            admin.email_verified = True
     print('Administrator bootstrap completed.', flush=True)
 
 def main():

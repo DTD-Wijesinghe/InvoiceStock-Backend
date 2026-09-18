@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator, field_valida
 
 
 Money = Decimal
-RECOVERY_QUESTION_CODES = {'id_number', 'br_number', 'secret_code'}
 
 
 class Input(BaseModel):
@@ -18,12 +17,6 @@ class Register(Input):
     email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
     password: str = Field(min_length=10, max_length=128)
     confirm_password: str = Field(min_length=10, max_length=128)
-    recovery_question_1: str = Field(default='', max_length=40)
-    recovery_question_2: str = Field(default='', max_length=40)
-    recovery_question_3: str = Field(default='', max_length=40)
-    recovery_answer_1: str = Field(default='', min_length=2, max_length=200)
-    recovery_answer_2: str = Field(default='', min_length=2, max_length=200)
-    recovery_answer_3: str = Field(default='', min_length=2, max_length=200)
 
     @field_validator('password')
     @classmethod
@@ -37,17 +30,6 @@ class Register(Input):
         if self.password != self.confirm_password:
             raise ValueError('Passwords do not match')
         return self
-
-    @model_validator(mode='after')
-    def valid_recovery_answers(self):
-        questions = [self.recovery_question_1, self.recovery_question_2, self.recovery_question_3]
-        answers = [self.recovery_answer_1.strip(), self.recovery_answer_2.strip(), self.recovery_answer_3.strip()]
-        if set(questions) != RECOVERY_QUESTION_CODES:
-            raise ValueError('Choose three different recovery questions')
-        if any(len(a) < 2 for a in answers):
-            raise ValueError('Answer all three recovery questions')
-        return self
-
 
 class Login(Input):
     email: str
@@ -61,10 +43,7 @@ class ForgotPassword(Input):
 
 class ResetPassword(Input):
     email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
-    code: str | None = Field(default=None, min_length=6, max_length=6, pattern=r'^\d{6}$')
-    recovery_answer_1: str | None = Field(default=None, min_length=2, max_length=200)
-    recovery_answer_2: str | None = Field(default=None, min_length=2, max_length=200)
-    recovery_answer_3: str | None = Field(default=None, min_length=2, max_length=200)
+    code: str = Field(min_length=6, max_length=6, pattern=r'^\d{6}$')
     password: str = Field(min_length=10, max_length=128)
     confirm_password: str = Field(min_length=10, max_length=128)
 
@@ -80,6 +59,15 @@ class ResetPassword(Input):
         if self.password != self.confirm_password:
             raise ValueError('Passwords do not match')
         return self
+
+
+class EmailCodeInput(Input):
+    email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
+    code: str = Field(min_length=6, max_length=6, pattern=r'^\d{6}$')
+
+
+class EmailOnlyInput(Input):
+    email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
 
 class ProductInput(Input):
     sku: str = Field(min_length=1, max_length=60)
@@ -159,6 +147,15 @@ class MemberInput(Input):
     email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
     password: str = Field(min_length=10, max_length=128)
     role: Literal['staff', 'viewer']
+    permissions: list[str] = Field(default_factory=list, max_length=30)
+
+    @field_validator('permissions')
+    @classmethod
+    def valid_permissions(cls, value):
+        allowed = {'overview', 'invoices', 'products', 'inventory', 'purchases', 'customers', 'suppliers', 'expenses', 'reports', 'ai_assistant', 'notifications', 'billing', 'backups', 'feedback', 'settings', 'about'}
+        if any(item not in allowed for item in value) or len(set(value)) != len(value):
+            raise ValueError('Invalid feature permission')
+        return value
 
 
 class AgentInput(Input):

@@ -49,7 +49,7 @@ def install_admin_routes(app, auth, db_dependency):
     @app.get('/api/admin/overview')
     def overview(user:Actor,db:DB):
         require_admin(user)
-        owners=list(db.scalars(select(User).where(User.role=='owner')))
+        owners=list(db.scalars(select(User).where(User.role.in_(['owner', 'company_admin']))))
         states=[access_status(db,o) for o in owners]
         amount=db.scalar(select(func.coalesce(func.sum(BillingOrder.amount),0)).where(BillingOrder.status=='paid'))
         return {'businesses':len(owners),'users':db.scalar(select(func.count()).select_from(User).where(User.role!='platform_admin')),
@@ -61,7 +61,7 @@ def install_admin_routes(app, auth, db_dependency):
     def businesses(user:Actor,db:DB):
         require_admin(user)
         rows=[]
-        for owner in db.scalars(select(User).where(User.role=='owner').order_by(User.created_at.desc()).limit(500)):
+        for owner in db.scalars(select(User).where(User.role.in_(['owner', 'company_admin'])).order_by(User.created_at.desc()).limit(500)):
             b=db.get(Business,owner.business_id)
             rows.append({'id':b.id,'name':b.name,'created_at':b.created_at.isoformat(),'owner':owner.name,'email':owner.email,'subscription':access_status(db,owner)})
         return rows
@@ -69,7 +69,7 @@ def install_admin_routes(app, auth, db_dependency):
     @app.post('/api/admin/businesses/{bid}/subscription')
     def manage_subscription(bid:str,data:SubscriptionAction,user:Actor,db:DB):
         require_admin(user)
-        owner=db.scalar(select(User).where(User.business_id==bid,User.role=='owner'))
+        owner=db.scalar(select(User).where(User.business_id==bid,User.role.in_(['owner', 'company_admin'])))
         if not owner:raise HTTPException(404,'Business not found')
         tenant_lock(db,owner)
         sub=subscription(db,owner)

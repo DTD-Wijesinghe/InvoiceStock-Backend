@@ -14,7 +14,7 @@ def money(value):
 
 def serialize(obj):
     return {c.name: (str(v) if isinstance(v, Decimal) else v.isoformat() if hasattr(v, 'isoformat') else v)
-            for c in obj.__table__.columns if c.name != 'password_hash' for v in [getattr(obj, c.name)]}
+            for c in obj.__table__.columns if c.name not in ('password_hash', 'logo_data') for v in [getattr(obj, c.name)]}
 
 
 def get(db, model, entity_id, user, lock=False):
