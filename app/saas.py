@@ -354,7 +354,7 @@ def install_routes(app, auth, db_dependency, write):
     @app.get('/api/backups')
     def backups(user: Actor, db: DB):
         write(user, True)
-        return {'records': [serialize(b) for b in db.scalars(select(BackupRecord).where(BackupRecord.business_id == user.business_id).order_by(BackupRecord.created_at.desc()).limit(30))], 'daily_schedule': '01:00 UTC / 06:30 Sri Lanka', 'scheduler': 'External encrypted PostgreSQL workflow; requires administrator setup'}
+        return {'records': [serialize(b) for b in db.scalars(select(BackupRecord).where(BackupRecord.business_id == user.business_id).order_by(BackupRecord.created_at.desc()).limit(30))], 'daily_schedule': '00:30 UTC / 06:00 Sri Lanka', 'scheduler': 'GitHub Actions encrypted PostgreSQL workflow; configure the three INVOICESTOCK_* repository secrets'}
 
     @app.get('/api/backups/export')
     def export(user: Actor, db: DB):

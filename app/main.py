@@ -4,18 +4,21 @@ from collections import defaultdict, deque
 from threading import Lock
 import time
 import hashlib
+import hmac
 import secrets
+import smtplib
+from email.message import EmailMessage
 import jwt
 from pwdlib import PasswordHash
-from fastapi import FastAPI, Depends, HTTPException, Request, Response
+from fastapi import FastAPI, Depends, HTTPException, Request, Response, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
-from .db import session, settings, User, Business, Product, Contact, Document, Expense, Movement, Audit, AgentRun, CustomerPayment, AuthSession, AccountState, now
-from .schemas import Register, Login, ProductInput, ContactInput, DocumentInput, Approval, Adjustment, Payment, ExpenseInput, BusinessInput, MemberInput, AgentInput
+from .db import session, settings, User, Business, Product, Contact, Document, Expense, Movement, Audit, AgentRun, CustomerPayment, AuthSession, AccountState, PasswordReset, now
+from .schemas import Register, Login, ForgotPassword, ResetPassword, ProductInput, ContactInput, DocumentInput, Approval, Adjustment, Payment, ExpenseInput, BusinessInput, MemberInput, AgentInput
 from .services import serialize, get, audit, once, document_view, create_document, finalize, void_document, report, tenant_lock
 from .agents import run_agent
 from .saas import access_status, allowed_when_locked, subscription, notify, install_routes, utc
@@ -115,6 +118,22 @@ def sign_in(response, user, db, remember=False):
     return serialize(user)
 
 
+def send_reset_email(recipient, code):
+    if not (settings.smtp_host and settings.smtp_from):
+        return
+    message = EmailMessage()
+    message['Subject'] = 'InvoiceStock password reset code'
+    message['From'] = settings.smtp_from
+    message['To'] = recipient
+    message.set_content(f'Your InvoiceStock password reset code is {code}. It expires in 15 minutes. If you did not request this, ignore this email.')
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
+        if settings.smtp_use_tls:
+            server.starttls()
+        if settings.smtp_username:
+            server.login(settings.smtp_username, settings.smtp_password)
+        server.send_message(message)
+
+
 @app.get('/health')
 def health(db: DB):
     db.execute(text('SELECT 1'))
@@ -145,6 +164,39 @@ def login(data: Login, response: Response, request: Request, db: DB):
     if account and account.disabled:
         raise HTTPException(403, 'This account is disabled. Contact the administrator.')
     return sign_in(response, user, db, data.remember_me)
+
+
+@app.post('/api/auth/forgot-password')
+def forgot_password(data: ForgotPassword, request: Request, db: DB, background: BackgroundTasks):
+    throttle(request)
+    user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
+    if user:
+        db.query(PasswordReset).filter(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None)).update({'used_at': now()})
+        code = f'{secrets.randbelow(1000000):06d}'
+        db.add(PasswordReset(business_id=user.business_id, user_id=user.id, token_hash=hashlib.sha256(code.encode()).hexdigest(), expires_at=now() + timedelta(minutes=15)))
+        db.flush()
+        if settings.smtp_host and settings.smtp_from:
+            background.add_task(send_reset_email, user.email, code)
+    return {'message': 'If that email belongs to an account, a reset code has been sent.'}
+
+
+@app.post('/api/auth/reset-password')
+def reset_password(data: ResetPassword, request: Request, db: DB):
+    throttle(request)
+    user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
+    if not user:
+        raise HTTPException(400, 'Invalid or expired reset code')
+    reset = db.scalar(select(PasswordReset).where(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None)).order_by(PasswordReset.created_at.desc()))
+    if not reset or utc(reset.expires_at) <= now() or reset.attempts >= 5:
+        raise HTTPException(400, 'Invalid or expired reset code')
+    reset.attempts += 1
+    if not hmac.compare_digest(reset.token_hash, hashlib.sha256(data.code.encode()).hexdigest()):
+        raise HTTPException(400, 'Invalid or expired reset code')
+    reset.used_at = now()
+    user.password_hash = hasher.hash(data.password)
+    for active in db.scalars(select(AuthSession).where(AuthSession.user_id == user.id)):
+        db.delete(active)
+    return {'message': 'Password changed. Please sign in again.'}
 
 
 @app.post('/api/auth/logout')

@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     bank_transfer_amount: Decimal = Decimal('3500.00')
     backup_last_success: str = ''
     backup_webhook_secret: str = ''
+    smtp_host: str = ''
+    smtp_port: int = 587
+    smtp_username: str = ''
+    smtp_password: str = ''
+    smtp_from: str = ''
+    smtp_use_tls: bool = True
     @field_validator('frontend_origin', 'public_url', 'backend_public_url')
     @classmethod
     def normalize_origin(cls, value):
@@ -265,6 +271,15 @@ class AuthSession(Tenant, Base):
     user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PasswordReset(Tenant, Base):
+    __tablename__ = 'password_resets'
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class AccountState(Tenant, Base):

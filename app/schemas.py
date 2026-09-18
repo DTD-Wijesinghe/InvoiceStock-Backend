@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator
 
 
 Money = Decimal
@@ -29,6 +29,37 @@ class Login(Input):
     email: str
     password: str
     remember_me: bool = False
+
+
+class ForgotPassword(Input):
+    email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
+
+
+class ResetPassword(Input):
+    email: str = Field(min_length=5, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
+    code: str = Field(min_length=6, max_length=6, pattern=r'^\d{6}$')
+    password: str = Field(min_length=10, max_length=128)
+    confirm_password: str = Field(min_length=10, max_length=128)
+
+    @field_validator('password')
+    @classmethod
+    def strong_password(cls, value):
+        if not (any(c.isupper() for c in value) and any(c.islower() for c in value) and any(c.isdigit() for c in value) and any(not c.isalnum() for c in value)):
+            raise ValueError('Password must contain uppercase, lowercase, number, and special character')
+        return value
+
+    @field_validator('password')
+    @classmethod
+    def strong_password(cls, value):
+        if not (any(c.isupper() for c in value) and any(c.islower() for c in value) and any(c.isdigit() for c in value) and any(not c.isalnum() for c in value)):
+            raise ValueError('Password must contain uppercase, lowercase, number, and special character')
+        return value
+
+    @model_validator(mode='after')
+    def matching_passwords(self):
+        if self.password != self.confirm_password:
+            raise ValueError('Passwords do not match')
+        return self
 
 
 class ProductInput(Input):
