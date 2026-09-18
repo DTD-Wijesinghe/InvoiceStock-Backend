@@ -178,20 +178,11 @@ def forgot_password(data: ForgotPassword, request: Request, db: DB, background: 
     throttle(request)
     user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
     if user:
-        if user.recovery_question_1 and user.recovery_question_2 and user.recovery_question_3:
-            return {'recovery': 'questions', 'questions': [user.recovery_question_1, user.recovery_question_2, user.recovery_question_3],
-                    'message': 'Answer all three recovery questions to create a new password.'}
-        if not (settings.smtp_host and settings.smtp_from):
-            raise HTTPException(503, 'Password-reset email is not configured. Please contact the administrator.')
-        db.query(PasswordReset).filter(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None)).update({'used_at': now()})
-        code = f'{secrets.randbelow(1000000):06d}'
-        try:
-            send_reset_email(user.email, code)
-        except (OSError, smtplib.SMTPException, RuntimeError):
-            raise HTTPException(503, 'Password-reset email could not be sent. Please try again later.')
-        db.add(PasswordReset(business_id=user.business_id, user_id=user.id, token_hash=hashlib.sha256(code.encode()).hexdigest(), expires_at=now() + timedelta(minutes=15)))
-        db.flush()
-    return {'message': 'If that email belongs to an account, a reset code has been sent.'}
+        if not (user.recovery_question_1 and user.recovery_question_2 and user.recovery_question_3):
+            raise HTTPException(400, 'Recovery questions are not set for this account. Contact the administrator.')
+        return {'recovery': 'questions', 'questions': [user.recovery_question_1, user.recovery_question_2, user.recovery_question_3],
+                'message': 'Answer all three recovery questions to create a new password.'}
+    return {'message': 'If that email belongs to an account, recovery questions will be shown.'}
 
 
 @app.post('/api/auth/reset-password')
