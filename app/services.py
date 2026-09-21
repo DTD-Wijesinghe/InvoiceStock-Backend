@@ -67,7 +67,7 @@ def create_document(db, user, data):
         return db.scalar(select(Document).where(Document.business_id == user.business_id, Document.request_key == data.request_key))
     if data.contact_id:
         contact = get(db, Contact, data.contact_id, user)
-        if contact.kind != ('customer' if data.kind == 'invoice' else 'supplier'):
+        if contact.kind != ('customer' if data.kind in ('invoice', 'quotation') else 'supplier'):
             raise HTTPException(422, 'Wrong contact type')
     if data.kind == 'purchase' and not data.contact_id:
         raise HTTPException(422, 'Select a supplier')
@@ -79,13 +79,18 @@ def create_document(db, user, data):
         p = get(db, Product, pid, user)
         if not p.active:
             raise HTTPException(409, f'{p.name} is inactive')
-        price = p.sell_price if data.kind == 'invoice' else p.cost_price
+        price = p.sell_price if data.kind in ('invoice', 'quotation') else p.cost_price
         lines.append(dict(product_id=p.id, name=p.name, qty=qty, unit_price=price, cost_snapshot=p.cost_price, line_total=money(qty * price)))
     subtotal = sum((x['line_total'] for x in lines), Decimal(0))
     if data.discount > subtotal:
         raise HTTPException(422, 'Discount cannot exceed subtotal')
+    business = tenant_lock(db, user)
+    document_number = None
+    if data.kind == 'quotation':
+        document_number = f'QUO-{business.next_invoice:06d}'
+        business.next_invoice += 1
     doc = Document(business_id=user.business_id, kind=data.kind, contact_id=data.contact_id,
-                   request_key=data.request_key, subtotal=subtotal, discount=data.discount,
+                   number=document_number, request_key=data.request_key, created_by_name=user.name, subtotal=subtotal, discount=data.discount,
                    tax=data.tax, total=money(subtotal - data.discount + data.tax), note=data.note)
     db.add(doc)
     db.flush()
@@ -93,6 +98,52 @@ def create_document(db, user, data):
     audit(db, user, 'draft_created', doc.id, after=serialize(doc))
     db.flush()
     return doc
+
+
+def update_quotation_status(db, user, doc_id, status):
+    doc = get(db, Document, doc_id, user, True)
+    if doc.kind != 'quotation':
+        raise HTTPException(409, 'Only quotations have quotation workflow statuses')
+    allowed = {
+        'draft': {'draft', 'sent'},
+        'sent': {'sent', 'draft', 'approved'},
+        'approved': {'approved', 'sent', 'invoiced'},
+        'invoiced': {'invoiced'},
+    }
+    if status not in allowed.get(doc.status, set()):
+        raise HTTPException(409, f'Quotation cannot move from {doc.status} to {status}')
+    before = serialize(doc)
+    doc.status = status
+    audit(db, user, 'quotation_status_changed', doc.id, before, serialize(doc))
+    db.flush()
+    return doc
+
+
+def convert_quotation_to_invoice(db, user, doc_id):
+    quotation = get(db, Document, doc_id, user, True)
+    if quotation.kind != 'quotation':
+        raise HTTPException(409, 'Only quotations can be converted to invoices')
+    if quotation.status not in ('approved', 'invoiced'):
+        raise HTTPException(409, 'Approve the quotation before creating an invoice')
+    existing = db.scalar(select(Document).where(Document.business_id == user.business_id,
+                                                Document.request_key == f'quotation-invoice-{quotation.id}'))
+    if existing:
+        return existing
+    invoice = Document(business_id=user.business_id, kind='invoice', contact_id=quotation.contact_id,
+                       request_key=f'quotation-invoice-{quotation.id}', created_by_name=user.name,
+                       subtotal=quotation.subtotal, discount=quotation.discount, tax=quotation.tax,
+                       total=quotation.total, note=f'Created from quotation {quotation.number or quotation.id[:8]}')
+    db.add(invoice)
+    db.flush()
+    items = list(db.scalars(select(DocumentItem).where(DocumentItem.document_id == quotation.id)))
+    db.add_all([DocumentItem(business_id=user.business_id, document_id=invoice.id, product_id=i.product_id,
+                             name=i.name, qty=i.qty, unit_price=i.unit_price, cost_snapshot=i.cost_snapshot,
+                             line_total=i.line_total) for i in items])
+    quotation.status = 'invoiced'
+    audit(db, user, 'quotation_converted_to_invoice', quotation.id, after={'invoice_id': invoice.id})
+    audit(db, user, 'draft_created_from_quotation', invoice.id, after=serialize(invoice))
+    db.flush()
+    return invoice
 
 
 def finalize(db, user, doc_id):

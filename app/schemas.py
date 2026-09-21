@@ -102,7 +102,7 @@ class ItemInput(Input):
 
 
 class DocumentInput(Input):
-    kind: Literal['invoice', 'purchase'] = 'invoice'
+    kind: Literal['invoice', 'purchase', 'quotation'] = 'invoice'
     contact_id: str | None = None
     items: list[ItemInput] = Field(min_length=1, max_length=100)
     discount: Money = Field(default=0, ge=0, max_digits=14, decimal_places=2)
@@ -113,6 +113,10 @@ class DocumentInput(Input):
 
 class Approval(Input):
     approved: Literal[True]
+
+
+class QuotationStatusInput(Input):
+    status: Literal['draft', 'sent', 'approved', 'invoiced']
 
 
 class Adjustment(Approval):
@@ -152,7 +156,7 @@ class MemberInput(Input):
     @field_validator('permissions')
     @classmethod
     def valid_permissions(cls, value):
-        allowed = {'overview', 'invoices', 'products', 'inventory', 'purchases', 'customers', 'suppliers', 'expenses', 'reports', 'ai_assistant', 'notifications', 'billing', 'backups', 'feedback', 'settings', 'about'}
+        allowed = {'overview', 'invoices', 'quotations', 'products', 'inventory', 'purchases', 'customers', 'suppliers', 'expenses', 'reports', 'ai_assistant', 'notifications', 'billing', 'backups', 'feedback', 'settings', 'about'}
         if any(item not in allowed for item in value) or len(set(value)) != len(value):
             raise ValueError('Invalid feature permission')
         return value

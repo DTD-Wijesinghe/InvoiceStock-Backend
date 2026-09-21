@@ -20,8 +20,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 from .db import session, settings, User, Business, Product, Contact, Document, Expense, Movement, Audit, AgentRun, CustomerPayment, AuthSession, AccountState, PasswordReset, now
-from .schemas import Register, Login, ForgotPassword, ResetPassword, EmailCodeInput, EmailOnlyInput, ProductInput, ContactInput, DocumentInput, Approval, Adjustment, Payment, ExpenseInput, BusinessInput, MemberInput, AgentInput
-from .services import serialize, get, audit, once, document_view, document_summary, create_document, finalize, void_document, report, tenant_lock
+from .schemas import Register, Login, ForgotPassword, ResetPassword, EmailCodeInput, EmailOnlyInput, ProductInput, ContactInput, DocumentInput, Approval, QuotationStatusInput, Adjustment, Payment, ExpenseInput, BusinessInput, MemberInput, AgentInput
+from .services import serialize, get, audit, once, document_view, document_summary, create_document, update_quotation_status, convert_quotation_to_invoice, finalize, void_document, report, tenant_lock
 from .agents import run_agent
 from .saas import access_status, allowed_when_locked, subscription, notify, install_routes, utc
 from .admin import install_admin_routes
@@ -95,7 +95,7 @@ def current_user(request: Request, db: DB):
 Actor = Annotated[User, Depends(current_user)]
 
 FEATURE_PATHS = {
-    '/api/products': 'products', '/api/contacts': 'customers', '/api/documents': 'invoices',
+    '/api/products': 'products', '/api/contacts': 'customers', '/api/quotations': 'quotations', '/api/documents': 'invoices',
     '/api/expenses': 'expenses', '/api/movements': 'inventory', '/api/reports': 'reports',
     '/api/agents': 'ai_assistant', '/api/notifications': 'notifications', '/api/backup': 'backups',
     '/api/feedback': 'feedback', '/api/settings': 'settings',
@@ -113,7 +113,24 @@ def is_company_admin(user):
 def can_access(user, feature):
     if feature == 'overview':
         return is_company_admin(user)
-    return is_company_admin(user) or feature in (user.permissions or [])
+    if is_company_admin(user):
+        return True
+    permissions = set(user.permissions or [])
+    dependencies = {
+        'products': {'products', 'invoices', 'quotations', 'purchases'},
+        'customers': {'customers', 'suppliers', 'invoices', 'quotations', 'purchases'},
+        'invoices': {'invoices', 'purchases', 'quotations'},
+    }
+    return bool(permissions.intersection(dependencies.get(feature, {feature})))
+
+
+def document_feature(kind):
+    return 'quotations' if kind == 'quotation' else 'purchases' if kind == 'purchase' else 'invoices'
+
+
+def require_document_access(user, doc):
+    if not can_access(user, document_feature(doc.kind)):
+        raise HTTPException(403, 'This document type is not enabled for your account. Ask your company administrator.')
 
 
 def write(user, owner=False):
@@ -388,7 +405,11 @@ def movements(user: Actor, db: DB):
 
 @app.get('/api/contacts')
 def contacts(user: Actor, db: DB):
-    return [serialize(c) for c in db.scalars(select(Contact).where(Contact.business_id == user.business_id).order_by(Contact.name))]
+    permissions = set(user.permissions or [])
+    customer_access = is_company_admin(user) or bool(permissions.intersection({'customers', 'invoices', 'quotations'}))
+    supplier_access = is_company_admin(user) or bool(permissions.intersection({'suppliers', 'purchases'}))
+    kinds = [kind for kind, enabled in (('customer', customer_access), ('supplier', supplier_access)) if enabled]
+    return [serialize(c) for c in db.scalars(select(Contact).where(Contact.business_id == user.business_id, Contact.kind.in_(kinds)).order_by(Contact.name))]
 
 
 @app.post('/api/contacts')
@@ -416,23 +437,68 @@ def edit_contact(cid: str, data: ContactInput, user: Actor, db: DB):
 
 @app.get('/api/documents')
 def documents(user: Actor, db: DB):
-    return [document_summary(d) for d in db.scalars(select(Document).where(Document.business_id == user.business_id).order_by(Document.created_at.desc()).limit(500))]
+    allowed = [kind for kind in ('invoice', 'purchase', 'quotation') if can_access(user, document_feature(kind))]
+    return [document_summary(d) for d in db.scalars(select(Document).where(Document.business_id == user.business_id, Document.kind.in_(allowed)).order_by(Document.created_at.desc()).limit(500))]
 
 
 @app.post('/api/documents')
 def draft(data: DocumentInput, user: Actor, db: DB):
     write(user)
+    if data.kind == 'quotation':
+        raise HTTPException(422, 'Use the quotations endpoint for quotations')
+    if not can_access(user, document_feature(data.kind)):
+        raise HTTPException(403, 'This document type is not enabled for your account. Ask your company administrator.')
     return document_view(db, create_document(db, user, data))
+
+
+@app.get('/api/quotations')
+def quotations(user: Actor, db: DB):
+    return [document_summary(d) for d in db.scalars(select(Document).where(Document.business_id == user.business_id, Document.kind == 'quotation').order_by(Document.created_at.desc()).limit(500))]
+
+
+@app.post('/api/quotations')
+def quotation_draft(data: DocumentInput, user: Actor, db: DB):
+    write(user)
+    if data.kind != 'quotation':
+        raise HTTPException(422, 'Quotation endpoint requires quotation kind')
+    return document_view(db, create_document(db, user, data))
+
+
+@app.get('/api/quotations/{did}')
+def quotation_detail(did: str, user: Actor, db: DB):
+    doc = get(db, Document, did, user)
+    if doc.kind != 'quotation':
+        raise HTTPException(404, 'Quotation not found')
+    require_document_access(user, doc)
+    return document_view(db, doc)
+
+
+@app.post('/api/quotations/{did}/status')
+def quotation_status(did: str, data: QuotationStatusInput, user: Actor, db: DB):
+    write(user, data.status in ('approved', 'invoiced'))
+    return document_view(db, update_quotation_status(db, user, did, data.status))
+
+
+@app.post('/api/quotations/{did}/convert-invoice')
+def quotation_invoice(did: str, data: Approval, user: Actor, db: DB):
+    write(user, True)
+    return document_view(db, convert_quotation_to_invoice(db, user, did))
 
 
 @app.get('/api/documents/{did}')
 def detail(did: str, user: Actor, db: DB):
-    return document_view(db, get(db, Document, did, user))
+    doc = get(db, Document, did, user)
+    require_document_access(user, doc)
+    return document_view(db, doc)
 
 
 @app.post('/api/documents/{did}/approve')
 def approve(did: str, data: Approval, user: Actor, db: DB):
     write(user, True)
+    target = get(db, Document, did, user)
+    require_document_access(user, target)
+    if target.kind == 'quotation':
+        raise HTTPException(409, 'Use the quotation workflow to approve quotations')
     doc = finalize(db, user, did)
     for run in db.scalars(select(AgentRun).where(AgentRun.business_id == user.business_id, AgentRun.status == 'pending_approval')):
         if run.result.get('document', {}).get('id') == did:
@@ -443,12 +509,14 @@ def approve(did: str, data: Approval, user: Actor, db: DB):
 @app.post('/api/documents/{did}/void')
 def void(did: str, data: Approval, user: Actor, db: DB):
     write(user, True)
+    require_document_access(user, get(db, Document, did, user))
     return document_view(db, void_document(db, user, did))
 
 
 @app.post('/api/documents/{did}/payments')
 def payment(did: str, data: Payment, user: Actor, db: DB):
     write(user, True)
+    require_document_access(user, get(db, Document, did, user))
     if not once(db, user, data.request_key, {'action': 'payment', 'id': did, **data.model_dump()}):
         return serialize(get(db, Document, did, user))
     doc = get(db, Document, did, user, True)

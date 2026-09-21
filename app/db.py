@@ -134,6 +134,7 @@ class Document(Tenant, Base):
     contact_id: Mapped[str | None] = mapped_column(ForeignKey('contacts.id'))
     number: Mapped[str | None] = mapped_column(String(40))
     request_key: Mapped[str] = mapped_column(String(100))
+    created_by_name: Mapped[str] = mapped_column(String(120), default='')
     status: Mapped[str] = mapped_column(String(20), default='draft')
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     discount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
