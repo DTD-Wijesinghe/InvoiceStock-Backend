@@ -9,6 +9,7 @@ from .db import User, Business, Subscription, BillingOrder, BankTransfer, Feedba
 from .schemas import Input
 from .saas import access_status, subscription, utc, notify
 from .services import serialize, audit, tenant_lock
+from .storage import read as read_storage
 
 APP_INFO={'name':'InvoiceStock AI','version':'0.2.0','release_date':'2026-09-08','developer':'D.T.D.Wijesinghe','contact':'danidu.wijesinghe@outlook.com',
           'description':'Business invoicing, stock control, payment reporting and approval-based assistants.','license':'Developed for D.T.D.Wijesinghe.'}
@@ -148,7 +149,10 @@ def install_admin_routes(app, auth, db_dependency):
         require_admin(user)
         transfer=db.get(BankTransfer, tid)
         if not transfer: raise HTTPException(404, 'Payment slip not found')
-        return Response(content=transfer.file_data, media_type=transfer.content_type,
+        content = read_storage(transfer.storage_provider, transfer.storage_key) if transfer.storage_provider else transfer.file_data
+        if not content:
+            raise HTTPException(404, 'Payment slip file is unavailable')
+        return Response(content=content, media_type=transfer.content_type,
                         headers={'Content-Disposition': f'inline; filename="{transfer.file_name}"'})
 
     @app.post('/api/admin/bank-transfers/{tid}/review')

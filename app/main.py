@@ -25,6 +25,7 @@ from .services import serialize, get, audit, once, document_view, document_summa
 from .agents import run_agent
 from .saas import access_status, allowed_when_locked, subscription, notify, install_routes, utc
 from .admin import install_admin_routes
+from .storage import put_small, read as read_storage
 
 
 app = FastAPI(title='InvoiceStock AI', version='0.2.0', description='Tenant-scoped invoicing, inventory, and approval-based agents.', docs_url=None, redoc_url=None, openapi_url=None)
@@ -334,9 +335,12 @@ def me(user: Actor, db: DB):
 @app.get('/api/business/logo')
 def business_logo(user: Actor, db: DB):
     business = db.get(Business, user.business_id)
-    if not business or not business.logo_data:
+    if not business:
         raise HTTPException(404, 'Company logo has not been uploaded')
-    return RawResponse(content=business.logo_data, media_type=business.logo_content_type or 'image/png', headers={'Cache-Control': 'no-cache'})
+    content = read_storage(business.logo_storage_provider, business.logo_storage_key) if business.logo_storage_provider else business.logo_data
+    if not content:
+        raise HTTPException(404, 'Company logo has not been uploaded')
+    return RawResponse(content=content, media_type=business.logo_content_type or 'image/png', headers={'Cache-Control': 'no-cache'})
 
 
 @app.post('/api/business/logo')
@@ -350,7 +354,10 @@ def upload_business_logo(user: Actor, db: DB, file: UploadFile = File(...)):
     if len(content) > 1024 * 1024:
         raise HTTPException(413, 'Logo must be smaller than 1 MB')
     business = tenant_lock(db, user)
-    business.logo_data = content
+    provider, storage_key = put_small(f'companies/{business.id}/logo', content, file.content_type)
+    business.logo_data = None if provider else content
+    business.logo_storage_provider = provider
+    business.logo_storage_key = storage_key
     business.logo_content_type = file.content_type
     audit(db, user, 'company_logo_updated', business.id, after={'content_type': file.content_type, 'size': len(content)})
     return {'ok': True}

@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     brevo_api_key: str = ''
     brevo_sender_name: str = 'InvoiceStock'
+    r2_account_id: str = ''
+    r2_access_key_id: str = ''
+    r2_secret_access_key: str = ''
+    r2_bucket_name: str = ''
+    r2_endpoint: str = ''
+    supabase_url: str = ''
+    supabase_service_role_key: str = ''
+    supabase_storage_bucket: str = 'small-files'
     @field_validator('frontend_origin', 'public_url', 'backend_public_url')
     @classmethod
     def normalize_origin(cls, value):
@@ -83,6 +91,8 @@ class Business(Identity, Base):
     next_invoice: Mapped[int] = mapped_column(Integer, default=1)
     logo_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     logo_content_type: Mapped[str] = mapped_column(String(80), default='')
+    logo_storage_provider: Mapped[str] = mapped_column(String(20), default='')
+    logo_storage_key: Mapped[str] = mapped_column(String(300), default='')
 
 
 class User(Tenant, Base):
@@ -230,7 +240,9 @@ class BankTransfer(Tenant, Base):
     file_name: Mapped[str] = mapped_column(String(180))
     content_type: Mapped[str] = mapped_column(String(80))
     file_hash: Mapped[str] = mapped_column(String(64))
-    file_data: Mapped[bytes] = mapped_column(LargeBinary)
+    file_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    storage_provider: Mapped[str] = mapped_column(String(20), default='')
+    storage_key: Mapped[str] = mapped_column(String(300), default='')
     status: Mapped[str] = mapped_column(String(20), default='pending')
     review_note: Mapped[str] = mapped_column(String(500), default='')
     reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -279,6 +291,9 @@ class BackupRecord(Tenant, Base):
     actor: Mapped[str] = mapped_column(String(36))
     kind: Mapped[str] = mapped_column(String(30), default='manual_export')
     status: Mapped[str] = mapped_column(String(30), default='complete')
+    storage_provider: Mapped[str] = mapped_column(String(20), default='')
+    storage_key: Mapped[str] = mapped_column(String(300), default='')
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class AuthSession(Tenant, Base):

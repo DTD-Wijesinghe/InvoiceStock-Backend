@@ -16,6 +16,7 @@ from .db import (Business, User, Product, Contact, Document, DocumentItem, Movem
                  Subscription, BillingOrder, BankTransfer, CustomerPayment, Notification, Preference, Feedback, BackupRecord, settings, now)
 from .schemas import Input
 from .services import serialize, tenant_lock, get, audit
+from .storage import put_large, read as read_storage
 
 
 PRICE = Decimal('3500.00')
@@ -245,10 +246,12 @@ def install_routes(app, auth, db_dependency, write):
         if existing:
             raise HTTPException(409, 'This slip has already been submitted')
         form = await request.form()
+        provider, storage_key = put_large(f'companies/{user.business_id}/payment-slips/{digest}.{(slip.filename.rsplit(".", 1)[-1] if "." in slip.filename else "bin")}', payload, slip.content_type)
         transfer = BankTransfer(business_id=user.business_id, user_id=user.id, amount=settings.bank_transfer_amount,
                                 currency='LKR', transfer_reference=str(form.get('transfer_reference', ''))[:120],
                                 submitted_transfer_date=str(form.get('transfer_date', ''))[:10], file_name=slip.filename,
-                                content_type=slip.content_type, file_hash=digest, file_data=payload)
+                                content_type=slip.content_type, file_hash=digest, file_data=None if provider else payload,
+                                storage_provider=provider, storage_key=storage_key)
         db.add(transfer)
         db.flush()
         notify(db, user, 'bank-transfer-' + transfer.id, 'Payment slip received',
@@ -375,6 +378,19 @@ def install_routes(app, auth, db_dependency, write):
         tables = [Product, Contact, Document, DocumentItem, Movement, Expense, CustomerPayment, Audit, AgentRun, Subscription, BillingOrder, Feedback]
         payload = {'format': 'invoicestock-business-export', 'version': 2, 'exported_at': now().isoformat(), 'business': serialize(db.get(Business, user.business_id)),
                    'tables': {model.__tablename__: [serialize(row) for row in db.scalars(select(model).where(model.business_id == user.business_id))] for model in tables}}
-        db.add(BackupRecord(business_id=user.business_id, actor=user.id))
+        content = json.dumps(payload, indent=2).encode()
+        provider, storage_key = put_large(f'companies/{user.business_id}/backups/invoicestock-{now().strftime("%Y%m%dT%H%M%SZ")}.json', content, 'application/json')
+        db.add(BackupRecord(business_id=user.business_id, actor=user.id, storage_provider=provider, storage_key=storage_key, size_bytes=len(content)))
         audit(db, user, 'business_data_exported', user.business_id)
-        return Response(json.dumps(payload, indent=2), media_type='application/json', headers={'Content-Disposition': f'attachment; filename="invoicestock-{date.today()}.json"'})
+        return Response(content, media_type='application/json', headers={'Content-Disposition': f'attachment; filename="invoicestock-{date.today()}.json"'})
+
+    @app.get('/api/backups/{bid}/download')
+    def download_backup(bid: str, user: Actor, db: DB):
+        write(user, True)
+        record = db.scalar(select(BackupRecord).where(BackupRecord.id == bid, BackupRecord.business_id == user.business_id))
+        if not record or not record.storage_provider:
+            raise HTTPException(404, 'Stored backup not found')
+        content = read_storage(record.storage_provider, record.storage_key)
+        if not content:
+            raise HTTPException(404, 'Stored backup is unavailable')
+        return Response(content, media_type='application/json', headers={'Content-Disposition': f'attachment; filename="invoicestock-backup-{record.created_at.date()}.json"'})
